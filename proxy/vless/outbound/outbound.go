@@ -464,6 +464,7 @@ func (r *Reverse) Close() error {
 }
 
 func (h *Handler) preConnWorker(dialer internet.Dialer, dest net.Destination) {
+	// conn in conns may be nil
 	conns := make(chan stat.Connection)
 	dial := func() {
 		conn, err := dialer.Dial(context.Background(), dest)
@@ -473,10 +474,17 @@ func (h *Handler) preConnWorker(dialer internet.Dialer, dest net.Destination) {
 		}
 		conns <- conn
 	}
-	for range h.testpre {
-		go dial()
-		<-h.preConnWait
-	}
+	go func() {
+		go dial() // get a conn immediately
+		for range h.testpre - 1 {
+			select {
+			case <-h.preConnWait:
+				go dial()
+			case <-h.preConnStop:
+				return
+			}
+		}
+	}()
 	for {
 		select {
 		case conn := <-conns:
@@ -489,7 +497,7 @@ func (h *Handler) preConnWorker(dialer internet.Dialer, dest net.Destination) {
 				}
 				go dial()
 			} else {
-				// sleep until next client try
+				// sleep until next client try if dial failed
 				select {
 				case <-h.preConnWait:
 					go dial()
